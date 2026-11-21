@@ -1,0 +1,90 @@
+name: Build LineageOS 23.2 (nashc)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-nashc:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Check if sender is repository owner
+      if: github.event.repository.owner.login == github.event.sender.login
+      run: echo "Sender is the repository owner"
+    - name: Not the repository owner
+      if: github.event.repository.owner.login != github.event.sender.login
+      run: |
+        echo "Sender is not the repository owner"
+        exit 1
+
+    - name: Maximize build space
+      uses: easimon/maximize-build-space@master
+      with:
+        root-reserve-mb: 2048
+        swap-size-mb: 8192
+        remove-dotnet: 'true'
+        remove-android: 'true'
+        remove-haskell: 'true'
+        remove-codeql: 'true'
+        remove-docker-images: 'true'
+        build-mount-path: '/workspace'
+
+    - name: Prepare build environment
+      run: |
+        sudo apt update
+        sudo apt install -y git aria2 ccache
+        sudo curl --create-dirs -L -o /usr/local/bin/repo -O -L https://storage.googleapis.com/git-repo-downloads/repo
+        sudo chmod a+rx /usr/local/bin/repo
+        mkdir -p /workspace/ccache
+        export USE_CCACHE=1
+        export CCACHE_DIR=/workspace/ccache
+        ccache -M 45G
+
+    - name: Init LineageOS source
+      run: |
+        cd /workspace
+        mkdir lineage
+        cd lineage
+        repo init -u https://github.com/LineageOS/android.git -b lineage-23.2 --git-lfs
+
+    - name: Add nashc local manifest
+      run: |
+        cd /workspace/lineage
+        mkdir -p .repo/local_manifests
+        curl -L \
+          https://raw.githubusercontent.com/pradeepdhibar/android_nashc_manifest/lineage-23.2/default.xml \
+          -o .repo/local_manifests/nashc.xml
+
+    - name: Sync sources
+      run: |
+        cd /workspace/lineage
+        repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
+
+    - name: Build LineageOS ROM
+      run: |
+        cd /workspace/lineage
+        export USE_CCACHE=1
+        export CCACHE_DIR=/workspace/ccache
+        . build/envsetup.sh
+        lunch lineage_nashc-bp4a-userdebug
+        mka bacon -j$(nproc)
+      continue-on-error: true
+
+    - name: Check output directory
+      run: |
+        ls -al /workspace/lineage/out/target/product/nashc/ || echo "Output dir not found - build likely failed"
+
+    - name: Upload to Release
+      if: success() || failure()
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          /workspace/lineage/out/target/product/nashc/*.zip
+        name: nashc-${{ github.run_id }}
+        tag_name: ${{ github.run_id }}
+        body: |
+          Device: Realme 8 (nashc)
+          Branch: lineage-23.2
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
